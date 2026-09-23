@@ -29,22 +29,27 @@
   var MAX_NIGHTS = 5;
   var START_COINS = 0;
   var FLIP_TIME = 0.40;   // the sign takes a moment to turn
-  var OPEN_TIME = 2.2;    // once open, the door stands open this long: one flip, one stretch
+  var OPEN_TIME = 1.2;    // once open, the door stands open this long: one flip, one stretch
   var RELOCK    = 0.5;    // after it shuts, the sign needs a beat before it turns again
 
   // difficulty knobs. rent rises, the face cap tightens, the street gets busier.
+  // rent is the same bill on every shift. difficulty changes the street and the crowd,
+  // not what the night costs: a tighter face cap pays for itself with a richer room.
+  var W_STD   = [5,3,3,2];   // regular, quiet, spender, stranger
+  var W_RICH  = [4,2,6,1];   // hard: more spenders, fewer strangers
   var DIFFS = [
-    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:40,
-      spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
-    { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:36,
-      spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
-    { label:'HARD',   nightLen:36, rent:[0,7,15,22,29,35], knownMax:34,
-      spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
+    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:40, payMul:1.0,
+      weights:W_STD, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
+    { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:36, payMul:1.0,
+      weights:W_STD, spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
+    { label:'HARD',   nightLen:36, rent:[0,7,15,22,29,35], knownMax:34, payMul:1.12,
+      weights:W_STD, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
   ];
   var DIFF = DIFFS[1];
   var NIGHT_LEN = DIFF.nightLen;
   var RENT = DIFF.rent;
   var KNOWN_MAX = DIFF.knownMax;
+  var WATCH_BAND = 3;   // start warning this many faces before the cap, so it gives lead
 
   function useDiff(i){
     DIFF = DIFFS[i];
@@ -104,10 +109,10 @@
 
   // ---------- model ----------
   function pickType(){
-    var total = 0, k;
-    for (k=0;k<TYPES.length;k++) total += TYPES[k].weight;
+    var w = DIFF.weights, total = 0, k;
+    for (k=0;k<w.length;k++) total += w[k];
     var r = Math.random()*total;
-    for (k=0;k<TYPES.length;k++){ r -= TYPES[k].weight; if (r <= 0) return k; }
+    for (k=0;k<w.length;k++){ r -= w[k]; if (r <= 0) return k; }
     return 0;
   }
 
@@ -115,7 +120,7 @@
     if (ti === undefined) ti = pickType();
     var t = TYPES[ti];
     return {
-      x: x, ti: ti, pay: t.pay, add: t.add, col: t.col, name: t.name,
+      x: x, ti: ti, pay: Math.round(t.pay*DIFF.payMul), add: t.add, col: t.col, name: t.name,
       speed: DIFF.spdMin + Math.random()*(DIFF.spdMax-DIFF.spdMin),
       state: 'walk', bob: Math.random()*6.28
     };
@@ -190,7 +195,7 @@
       if (state.openTimer <= 0){ state.open = false; state.signLock = RELOCK; tone(330,0.07,0.018,'square'); }
     }
     if (state.hint > 0) state.hint = Math.max(0, state.hint - dt);
-    state.watched = state.known >= KNOWN_MAX;
+    state.watched = state.known >= KNOWN_MAX - WATCH_BAND;
 
     state.clock += dt;
     state.spawnT -= dt;
@@ -343,7 +348,9 @@
     // door
     ctx.fillStyle = '#10141f';
     rrect(600,232,62,GROUND-232,4); ctx.fill();
-    var doorGlow = state.open ? 1 : 0.22;
+    var live = state.open && state.signLock <= 0;   // the sign only reads OPEN once the turn lands
+    var turning = state.open && state.signLock > 0;
+    var doorGlow = live ? 1 : 0.22;
     ctx.fillStyle = 'rgba(255,190,100,'+(0.30*doorGlow)+')';
     rrect(604,236,54,GROUND-240,3); ctx.fill();
     ctx.fillStyle = '#2a3450';
@@ -356,13 +363,13 @@
     var sx = DOORX-64, sy = 144 + wob, sw = 128, sh = 40;
     ctx.fillStyle = '#0d1220';
     rrect(sx,sy,sw,sh,7); ctx.fill();
-    ctx.strokeStyle = state.open ? '#ffcf7a' : (ready ? '#5b6a90' : '#2b3450');
-    ctx.lineWidth = state.open ? 2.5 : 2;
+    ctx.strokeStyle = live ? '#ffcf7a' : (ready ? '#5b6a90' : '#2b3450');
+    ctx.lineWidth = live ? 2.5 : 2;
     rrect(sx,sy,sw,sh,7); ctx.stroke();
-    if (state.open){
+    if (live){
       ctx.shadowColor = 'rgba(255,200,110,0.8)'; ctx.shadowBlur = 18;
     }
-    var signCol = state.open ? '#ffd98a' : (ready ? '#8d99b5' : '#39425c');
+    var signCol = live ? '#ffd98a' : (turning ? '#6b7590' : (ready ? '#8d99b5' : '#39425c'));
     // little circular arrow: this thing flips
     ctx.strokeStyle = signCol; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(sx+22, sy+sh/2, 7, -0.5, 4.3); ctx.stroke();
@@ -375,9 +382,9 @@
     ctx.fillStyle = signCol;
     ctx.font = 'bold 19px system-ui,sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(state.open ? 'OPEN' : 'CLOSED', sx+sw/2+11, sy+sh/2+1);
+    ctx.fillText(live ? 'OPEN' : (turning ? '...' : 'CLOSED'), sx+sw/2+11, sy+sh/2+1);
     ctx.shadowBlur = 0;
-    if (state.open && state.signLock <= 0){
+    if (live){
       var frac = Math.max(0, state.openTimer/OPEN_TIME);
       ctx.fillStyle = 'rgba(255,207,122,0.85)';
       ctx.fillRect(sx+6, sy+sh-6, (sw-12)*frac, 3);
@@ -476,7 +483,8 @@
       ctx.textAlign = 'right';
       ctx.font = 'bold 11px system-ui,sans-serif';
       ctx.fillStyle = '#e0909a';
-      ctx.fillText('someone is watching \u00b7 dawn ends this', W-24, 74);
+      var left = Math.max(0, KNOWN_MAX - state.known);
+      ctx.fillText('someone is watching \u00b7 '+left+' more '+(left===1?'face':'faces')+' ends the night', W-24, 74);
     }
 
     if (state.mode === 'play' && state.hint > 0){
