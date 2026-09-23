@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Open Sign</title>
+<style>
+  html,body{margin:0;height:100%;background:#080a12;overflow:hidden;
+    font-family:system-ui,-apple-system,"Segoe UI",sans-serif}
+  #wrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center}
+  canvas{max-width:100%;max-height:100%;touch-action:manipulation;cursor:pointer}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="c" width="800" height="450"></canvas></div>
+<script>
+(() => {
+  'use strict';
+
+  var cv = document.getElementById('c');
+  var ctx = cv.getContext('2d');
+  var W = 800, H = 450;
+
+  var GROUND = 340;      // horizon / shop base line
+  var WALK_Y = 380;      // street line the customers walk on
+  var DOORX = 630;       // threshold x
+  var DOOR_IN = 12;      // enter window starts this far before door
+  var DOOR_OUT = 34;     // ... and ends this far after
+  var MAX_NIGHTS = 5;
+  var START_COINS = 0;
+  var FLIP_TIME = 0.40;   // the sign takes a moment to turn
+  var OPEN_TIME = 2.2;    // once open, the door stands open this long: one flip, one stretch
+  var RELOCK    = 0.5;    // after it shuts, the sign needs a beat before it turns again
+
+  // difficulty knobs. rent rises, the face cap tightens, the street gets busier.
+  var DIFFS = [
+    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:40,
+      spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
+    { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:36,
+      spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
+    { label:'HARD',   nightLen:36, rent:[0,7,15,22,29,35], knownMax:34,
+      spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
+  ];
+  var DIFF = DIFFS[1];
+  var NIGHT_LEN = DIFF.nightLen;
+  var RENT = DIFF.rent;
+  var KNOWN_MAX = DIFF.knownMax;
+
+  function useDiff(i){
+    DIFF = DIFFS[i];
+    NIGHT_LEN = DIFF.nightLen;
+    RENT = DIFF.rent;
+    KNOWN_MAX = DIFF.knownMax;
+  }
+
+  // pay = coins earned, add = how much of you this person remembers
+  var TYPES = [
+    {name:'regular',  pay:3, add:1, weight:5, col:'#9aa7b8'},
+    {name:'quiet',    pay:1, add:1, weight:3, col:'#7c8798'},
+    {name:'spender',  pay:8, add:2, weight:3, col:'#c8b06a'},
+    {name:'stranger', pay:5, add:3, weight:2, col:'#b0707a'}
+  ];
+
+  var state = {
+    mode:'title', night:1, coins:START_COINS, known:0, open:false,
+    clock:0, spawnT:1.2, served:0, passed:0, shake:0, flash:0, diffIdx:1,
+    signLock:0, openTimer:0, watched:false, hint:0
+  };
+  var customers = [];
+  var stars = [];
+  var audioCtx = null;
+
+  for (var i=0;i<70;i++){
+    stars.push({x:Math.random()*W, y:Math.random()*200, r:Math.random()*1.4+0.3, a:Math.random()*0.5+0.25});
+  }
+
+  // ---------- audio ----------
+  function ensureAudio(){
+    if (audioCtx) return;
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (AC) audioCtx = new AC();
+    } catch(e){ audioCtx = null; }
+  }
+  function tone(freq, dur, vol, type){
+    if (!audioCtx) return;
+    try {
+      var t = audioCtx.currentTime;
+      var o = audioCtx.createOscillator();
+      var g = audioCtx.createGain();
+      o.type = type || 'sine';
+      o.frequency.value = freq;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vol, t+0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t+dur);
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(t); o.stop(t+dur+0.02);
+    } catch(e){}
+  }
+  function sfxChime(){ tone(880,0.22,0.05,'sine'); tone(1320,0.30,0.03,'sine'); }
+  function sfxPass(){ tone(220,0.10,0.018,'triangle'); }
+  function sfxDawn(){ tone(330,0.5,0.04,'sine'); }
+  function sfxFound(){ tone(140,0.9,0.06,'sawtooth'); }
+
+  // ---------- model ----------
+  function pickType(){
+    var total = 0, k;
+    for (k=0;k<TYPES.length;k++) total += TYPES[k].weight;
+    var r = Math.random()*total;
+    for (k=0;k<TYPES.length;k++){ r -= TYPES[k].weight; if (r <= 0) return k; }
+    return 0;
+  }
+
+  function mkCustomer(x, ti){
+    if (ti === undefined) ti = pickType();
+    var t = TYPES[ti];
+    return {
+      x: x, ti: ti, pay: t.pay, add: t.add, col: t.col, name: t.name,
+      speed: DIFF.spdMin + Math.random()*(DIFF.spdMax-DIFF.spdMin),
+      state: 'walk', bob: Math.random()*6.28
+    };
+  }
+
+  function spawnCustomer(){
+    var n = Math.random() < 0.4 ? 2 : 1;
+    for (var i=0;i<n;i++){
+      customers.push(mkCustomer(-30 - i*46));
+    }
+  }
+
+  function reset(){
+    useDiff(state.diffIdx);
+    state.mode = 'play';
+    state.night = 1; state.coins = START_COINS; state.known = 0;
+    state.open = false; state.served = 0; state.passed = 0;
+    state.shake = 0; state.flash = 0;
+    state.signLock = 0; state.openTimer = 0; state.watched = false; state.hint = 6;
+    customers.length = 0;
+    startNight();
+  }
+
+  function startNight(){
+    state.clock = 0;
+    state.spawnT = 1.0;
+    customers.length = 0;
+  }
+
+  function enter(c){
+    c.state = 'enter';
+    state.coins += c.pay;
+    state.known += c.add;
+    state.served += 1;
+    state.flash = Math.min(1, state.flash + 0.35);
+    sfxChime();                      // the door stays open: whoever reaches it while it is open comes in
+  }
+
+  function dawn(){
+    sfxDawn();
+    var due = RENT[state.night];
+    if (state.known >= KNOWN_MAX){
+      loseKnown(); return;          // the faces in the window are settled at dawn, not mid-street
+    }
+    if (state.coins < due){
+      state.mode = 'lost'; state.lostWhy = 'rent'; return;
+    }
+    state.coins -= due;
+    if (state.night >= MAX_NIGHTS){
+      state.mode = 'won'; return;
+    }
+    state.night += 1;
+    startNight();
+  }
+
+  function loseKnown(){
+    state.mode = 'lost'; state.lostWhy = 'known'; state.shake = 1;
+    sfxFound();
+  }
+
+  function update(dt){
+    if (state.mode !== 'play') {
+      if (state.shake > 0) state.shake = Math.max(0, state.shake - dt*1.5);
+      if (state.flash > 0) state.flash = Math.max(0, state.flash - dt*2);
+      return;
+    }
+    if (state.shake > 0) state.shake = Math.max(0, state.shake - dt*2.2);
+    if (state.flash > 0) state.flash = Math.max(0, state.flash - dt*2.4);
+    if (state.signLock > 0) state.signLock = Math.max(0, state.signLock - dt);
+    if (state.open && state.signLock <= 0){
+      state.openTimer = Math.max(0, state.openTimer - dt);
+      if (state.openTimer <= 0){ state.open = false; state.signLock = RELOCK; tone(330,0.07,0.018,'square'); }
+    }
+    if (state.hint > 0) state.hint = Math.max(0, state.hint - dt);
+    state.watched = state.known >= KNOWN_MAX;
+
+    state.clock += dt;
+    state.spawnT -= dt;
+    if (state.spawnT <= 0){
+      spawnCustomer();
+      state.spawnT = DIFF.spawnMin + Math.random()*(DIFF.spawnMax-DIFF.spawnMin);
+    }
+
+    var i, c;
+    for (i=0;i<customers.length;i++){
+      c = customers[i];
+      c.bob += dt*7;
+      if (c.state === 'walk' || c.state === 'missed'){
+        c.x += c.speed*dt;
+        if (c.state === 'walk'){
+          if (state.open && state.signLock <= 0 && c.x >= DOORX-DOOR_IN && c.x <= DOORX+DOOR_OUT){
+            enter(c);
+          } else if (c.x > DOORX+DOOR_OUT){
+            c.state = 'missed';
+            state.passed += 1;
+            sfxPass();
+          }
+        }
+      } else if (c.state === 'enter'){
+        c.x += 70*dt;
+        if (c.x > DOORX+30) c.state = 'gone';
+      }
+    }
+    customers = customers.filter((k) => k.state !== 'gone' && k.x < W+80);
+
+    if (state.clock >= NIGHT_LEN){ dawn(); }
+  }
+
+  function toggleSign(){
+    ensureAudio();
+    if (state.mode === 'title'){ reset(); return; }
+    if (state.mode === 'won' || state.mode === 'lost'){ reset(); return; }
+    if (state.signLock > 0) return;   // mid-turn, or the sign is settling
+    if (state.open) return;           // the door is open; it shuts on its own
+    state.open = true;                // one flip: the door stands open for a stretch
+    state.openTimer = OPEN_TIME;
+    state.signLock = FLIP_TIME;
+    state.hint = 0;
+    tone(660, 0.08, 0.02, 'square');
+  }
+
+  function chooseDiff(i){
+    state.diffIdx = Math.max(0, Math.min(DIFFS.length-1, i));
+    useDiff(state.diffIdx);
+    tone(520, 0.06, 0.02, 'square');
+  }
+
+  // title-screen mode buttons: [x, y, w, h] in canvas space
+  function diffRects(){
+    var r = [], bw = 176, bh = 46, gap = 18;
+    var total = DIFFS.length*bw + (DIFFS.length-1)*gap;
+    var x0 = (W-total)/2, y = 300;
+    for (var i=0;i<DIFFS.length;i++){
+      r.push([x0 + i*(bw+gap), y, bw, bh]);
+    }
+    return r;
+  }
+
+  // ---------- draw ----------
+  function rrect(x,y,w,h,r){
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+  }
+
+  function draw(){
+    ctx.save();
+    if (state.shake > 0){
+      ctx.translate((Math.random()-0.5)*8*state.shake, (Math.random()-0.5)*8*state.shake);
+    }
+
+    var sky = ctx.createLinearGradient(0,0,0,GROUND);
+    sky.addColorStop(0,'#080b16'); sky.addColorStop(1,'#141b2e');
+    ctx.fillStyle = sky; ctx.fillRect(0,0,W,GROUND);
+
+    var i;
+    for (i=0;i<stars.length;i++){
+      var s = stars[i];
+      ctx.globalAlpha = s.a;
+      ctx.fillStyle = '#cdd6ee';
+      ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,6.283); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // distant city
+    ctx.fillStyle = '#0e1424';
+    var bx = 0;
+    while (bx < W){
+      var bw = 40 + ((bx*37)%60);
+      var bh = 60 + ((bx*53)%110);
+      ctx.fillRect(bx, GROUND-bh, bw, bh);
+      bx += bw + 12;
+    }
+
+    // ground / street
+    var gg = ctx.createLinearGradient(0,GROUND,0,H);
+    gg.addColorStop(0,'#1a2231'); gg.addColorStop(0.5,'#121722'); gg.addColorStop(1,'#0a0d15');
+    ctx.fillStyle = gg; ctx.fillRect(0,GROUND,W,H-GROUND);
+    ctx.strokeStyle = 'rgba(60,74,104,0.35)'; ctx.lineWidth = 1;
+
+    // shop facade
+    ctx.fillStyle = '#171d2c';
+    ctx.fillRect(505,96,295,GROUND-96);
+    ctx.fillStyle = '#20293d';
+    ctx.fillRect(505,96,295,12);
+
+    // window: the glass fills with the faces that remember you.
+    // the bill is always visible; it brightens as the window fills, sign or no sign.
+    var f0 = Math.min(1, state.known/KNOWN_MAX);
+    var glow = 0.5 + 0.5*f0;
+    var wr = Math.round(255 - 45*f0), wg2 = Math.round(196 - 76*f0), wb = Math.round(110 + 120*f0);
+    var wg = ctx.createLinearGradient(0,190,0,290);
+    wg.addColorStop(0, 'rgba('+wr+','+wg2+','+wb+','+(0.75*glow)+')');
+    wg.addColorStop(1, 'rgba('+wr+','+wg2+','+wb+','+(0.35*glow)+')');
+    ctx.fillStyle = '#0c101a';
+    rrect(524,196,70,88,4); ctx.fill();
+    ctx.fillStyle = wg;
+    rrect(528,200,62,80,3); ctx.fill();
+
+    var faces = Math.min(state.known, 12), fi, fcol, frow, fx, fy;
+    for (fi=0; fi<faces; fi++){
+      fcol = fi%4; frow = Math.floor(fi/4);
+      fx = 535 + fcol*14; fy = 268 - frow*17;
+      ctx.fillStyle = 'rgba(16,11,8,0.9)';
+      ctx.beginPath(); ctx.arc(fx, fy, 4.4, 0, 6.283); ctx.fill();
+      rrect(fx-6.5, fy+3.5, 13, 11, 3); ctx.fill();
+    }
+    if (state.known > 12){
+      ctx.fillStyle = 'rgba(16,11,8,0.9)';
+      ctx.font = 'bold 11px system-ui,sans-serif';
+      ctx.textAlign = 'right'; ctx.textBaseline = 'alphabetic';
+      ctx.fillText('+'+(state.known-12), 587, 277);
+    }
+
+    ctx.strokeStyle = '#2a3450'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(559,200); ctx.lineTo(559,280);
+    ctx.moveTo(528,240); ctx.lineTo(590,240);
+    ctx.stroke();
+
+    // door
+    ctx.fillStyle = '#10141f';
+    rrect(600,232,62,GROUND-232,4); ctx.fill();
+    var doorGlow = state.open ? 1 : 0.22;
+    ctx.fillStyle = 'rgba(255,190,100,'+(0.30*doorGlow)+')';
+    rrect(604,236,54,GROUND-240,3); ctx.fill();
+    ctx.fillStyle = '#2a3450';
+    ctx.fillRect(600,232,62,4);
+    ctx.beginPath(); ctx.arc(650,300,3,0,6.283); ctx.fill();
+
+    // the sign: this is the control, and it takes a moment to turn
+    var ready = state.signLock <= 0;
+    var wob = ready ? Math.sin(state.clock*3.2)*1.5 : 0;
+    var sx = DOORX-64, sy = 144 + wob, sw = 128, sh = 40;
+    ctx.fillStyle = '#0d1220';
+    rrect(sx,sy,sw,sh,7); ctx.fill();
+    ctx.strokeStyle = state.open ? '#ffcf7a' : (ready ? '#5b6a90' : '#2b3450');
+    ctx.lineWidth = state.open ? 2.5 : 2;
+    rrect(sx,sy,sw,sh,7); ctx.stroke();
+    if (state.open){
+      ctx.shadowColor = 'rgba(255,200,110,0.8)'; ctx.shadowBlur = 18;
+    }
+    var signCol = state.open ? '#ffd98a' : (ready ? '#8d99b5' : '#39425c');
+    // little circular arrow: this thing flips
+    ctx.strokeStyle = signCol; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(sx+22, sy+sh/2, 7, -0.5, 4.3); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(sx+22+7*Math.cos(4.3), sy+sh/2+7*Math.sin(4.3));
+    ctx.lineTo(sx+22+7*Math.cos(4.3)+3.5, sy+sh/2+7*Math.sin(4.3)-2.5);
+    ctx.moveTo(sx+22+7*Math.cos(4.3), sy+sh/2+7*Math.sin(4.3));
+    ctx.lineTo(sx+22+7*Math.cos(4.3)+1, sy+sh/2+7*Math.sin(4.3)+4);
+    ctx.stroke();
+    ctx.fillStyle = signCol;
+    ctx.font = 'bold 19px system-ui,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(state.open ? 'OPEN' : 'CLOSED', sx+sw/2+11, sy+sh/2+1);
+    ctx.shadowBlur = 0;
+    if (state.open && state.signLock <= 0){
+      var frac = Math.max(0, state.openTimer/OPEN_TIME);
+      ctx.fillStyle = 'rgba(255,207,122,0.85)';
+      ctx.fillRect(sx+6, sy+sh-6, (sw-12)*frac, 3);
+    }
+
+    // customers
+    for (i=0;i<customers.length;i++){
+      var c = customers[i];
+      var bob = Math.sin(c.bob)*1.6;
+      var baseY = WALK_Y + bob;
+      ctx.globalAlpha = c.state === 'missed' ? 0.4 : 1;
+      // shadow on the street
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.beginPath(); ctx.ellipse(c.x, WALK_Y+3, 13, 5, 0, 0, 6.283); ctx.fill();
+      // body
+      ctx.fillStyle = c.col;
+      rrect(c.x-8, baseY-34, 16, 34, 6); ctx.fill();
+      // head
+      ctx.beginPath(); ctx.arc(c.x, baseY-42, 7, 0, 6.283); ctx.fill();
+      // label chip
+      if (c.state === 'walk'){
+        var p1 = '+'+c.pay+'c', p2 = '+'+c.add+'k';
+        ctx.font = 'bold 11px system-ui,sans-serif';
+        var w1 = ctx.measureText(p1).width, w2 = ctx.measureText(p2).width;
+        var cw = w1+w2+21, chh = 17, cy = baseY-78, cx = c.x-cw/2;
+        ctx.fillStyle = 'rgba(8,10,16,0.82)';
+        rrect(cx, cy-chh/2, cw, chh, 5); ctx.fill();
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#ffd98a'; ctx.fillText(p1, cx+7, cy+0.5);
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#e0909a'; ctx.fillText(p2, cx+cw-7, cy+0.5);
+      }
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.restore();
+
+    // flash on serve
+    if (state.flash > 0){
+      ctx.fillStyle = 'rgba(255,205,120,'+(state.flash*0.10)+')';
+      ctx.fillRect(0,0,W,H);
+    }
+
+    drawHud();
+
+    if (state.mode === 'title') drawTitle();
+    else if (state.mode === 'won') drawEnd(true);
+    else if (state.mode === 'lost') drawEnd(false);
+  }
+
+  function drawHud(){
+    if (state.mode === 'title') return;
+    ctx.textBaseline = 'top';
+
+    // left panel
+    ctx.fillStyle = '#0b0f1a';
+    rrect(14,12,196,56,8); ctx.fill();
+    ctx.strokeStyle = '#26304a'; ctx.lineWidth = 1;
+    rrect(14,12,196,56,8); ctx.stroke();
+    ctx.textAlign = 'left';
+    ctx.font = 'bold 13px system-ui,sans-serif';
+    ctx.fillStyle = '#9fb0cc';
+    ctx.fillText('NIGHT '+state.night+' / '+MAX_NIGHTS+'  ·  '+DIFF.label, 24, 22);
+    var left = Math.max(0, NIGHT_LEN - state.clock);
+    ctx.font = '12px system-ui,sans-serif';
+    ctx.fillStyle = '#7d89a4';
+    ctx.fillText('closes in 0:'+(left<10?'0':'')+Math.ceil(left), 24, 38);
+    ctx.fillText('rent at dawn '+RENT[state.night]+'c', 24, 54);
+
+    // right panel
+    var pw = 216, px = W-14-pw;
+    ctx.fillStyle = '#0b0f1a';
+    rrect(px,12,pw,56,8); ctx.fill();
+    ctx.strokeStyle = '#26304a'; ctx.lineWidth = 1;
+    rrect(px,12,pw,56,8); ctx.stroke();
+    ctx.textAlign = 'right';
+    ctx.font = 'bold 16px system-ui,sans-serif';
+    ctx.fillStyle = '#ffd98a';
+    ctx.fillText(state.coins+'c', W-24, 20);
+
+    // known bar
+    var bw = pw-20, bx = px+10, by = 42;
+    ctx.fillStyle = '#1a2132';
+    rrect(bx,by,bw,9,4); ctx.fill();
+    var f = Math.min(1, state.known/KNOWN_MAX);
+    var col = f < 0.6 ? '#6f9c8a' : (f < 0.85 ? '#c8b06a' : '#d06a6a');
+    ctx.fillStyle = col;
+    rrect(bx,by,Math.max(6,bw*f),9,4); ctx.fill();
+    ctx.textAlign = 'right';
+    ctx.font = '11px system-ui,sans-serif';
+    ctx.fillStyle = '#7d89a4';
+    ctx.fillText('people who know your face  '+state.known+'/'+KNOWN_MAX, W-24, by+13);
+
+    if (state.watched){
+      ctx.textAlign = 'right';
+      ctx.font = 'bold 11px system-ui,sans-serif';
+      ctx.fillStyle = '#e0909a';
+      ctx.fillText('someone is watching \u00b7 dawn ends this', W-24, 74);
+    }
+
+    if (state.mode === 'play' && state.hint > 0){
+      ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic';
+      ctx.font = 'bold 13px system-ui,sans-serif';
+      ctx.fillStyle = 'rgba(255,217,138,'+Math.min(1, state.hint/2).toFixed(2)+')';
+      ctx.fillText('click anywhere or press space to open the door for a moment', W/2, H-16);
+    }
+  }
+
+  function overlay(a){
+    ctx.fillStyle = 'rgba(6,8,14,'+a+')';
+    ctx.fillRect(0,0,W,H);
+  }
+
+  function drawTitle(){
+    overlay(0.72);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = 'bold 44px system-ui,sans-serif';
+    ctx.fillText('OPEN SIGN', W/2, 128);
+    ctx.fillStyle = '#9aa7b8';
+    ctx.font = '16px system-ui,sans-serif';
+    ctx.fillText('a small shop. almost nobody comes.', W/2, 172);
+    ctx.fillStyle = '#7c8798';
+    ctx.font = '14px system-ui,sans-serif';
+    ctx.fillText('flip the sign and the door stands open a moment.', W/2, 208);
+    ctx.fillText('whoever reaches it walks in. they pay, and they keep your face.', W/2, 228);
+    ctx.fillStyle = '#6c7893';
+    ctx.fillText('one flip takes a stretch of street, not one person. five nights, make the rent.', W/2, 254);
+
+    ctx.fillStyle = '#5f6b86';
+    ctx.font = 'bold 12px system-ui,sans-serif';
+    ctx.fillText('CHOOSE A SHIFT', W/2, 284);
+
+    var rects = diffRects();
+    for (var i=0;i<rects.length;i++){
+      var r = rects[i];
+      var sel = i === state.diffIdx;
+      ctx.fillStyle = sel ? 'rgba(255,205,120,0.14)' : 'rgba(10,14,24,0.85)';
+      rrect(r[0], r[1], r[2], r[3], 8); ctx.fill();
+      ctx.strokeStyle = sel ? '#ffcf7a' : '#2c3550';
+      ctx.lineWidth = sel ? 2 : 1;
+      rrect(r[0], r[1], r[2], r[3], 8); ctx.stroke();
+      ctx.fillStyle = sel ? '#ffd98a' : '#8d99b5';
+      ctx.font = 'bold 18px system-ui,sans-serif';
+      ctx.fillText(DIFFS[i].label, r[0]+r[2]/2, r[1]+18);
+      ctx.fillStyle = '#6c7893';
+      ctx.font = '11px system-ui,sans-serif';
+      var tot=0; for (var q=0;q<DIFFS[i].rent.length;q++) tot+=DIFFS[i].rent[q];
+      ctx.fillText('rent '+tot+'c  ·  cap '+DIFFS[i].knownMax,
+        r[0]+r[2]/2, r[1]+35);
+    }
+
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = 'bold 14px system-ui,sans-serif';
+    ctx.fillText('click a shift, or press 1 / 2 / 3', W/2, 388);
+    ctx.fillStyle = '#6c7893';
+    ctx.font = '12px system-ui,sans-serif';
+    ctx.fillText('arrow keys to pick, space to start', W/2, 410);
+  }
+
+  function drawEnd(won){
+    overlay(won ? 0.66 : 0.74);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    var title, l1, l2;
+    if (won){
+      title = 'you kept it';
+      l1 = 'five nights, and not enough people know your face.';
+      l2 = 'the sign is off.';
+    } else if (state.lostWhy === 'rent'){
+      title = 'the shop closes';
+      l1 = 'dawn came and the till was short.';
+      l2 = 'you served too few to stay.';
+    } else {
+      title = 'too well known';
+      l1 = 'dawn came, and the window was full of faces.';
+      l2 = 'this place is not quiet anymore.';
+    }
+    ctx.fillStyle = won ? '#8fd0a8' : '#d08a8a';
+    ctx.font = 'bold 38px system-ui,sans-serif';
+    ctx.fillText(title, W/2, 160);
+    ctx.fillStyle = '#9aa7b8';
+    ctx.font = '16px system-ui,sans-serif';
+    ctx.fillText(l1, W/2, 214);
+    ctx.fillText(l2, W/2, 238);
+    ctx.fillStyle = '#7c8798';
+    ctx.font = '14px system-ui,sans-serif';
+    ctx.fillText('served '+state.served+'   ·   turned away '+state.passed, W/2, 282);
+    ctx.fillStyle = '#ffd98a';
+    ctx.font = 'bold 15px system-ui,sans-serif';
+    ctx.fillText('click or press space to play again', W/2, 330);
+  }
+
+  // ---------- loop ----------
+  var last = 0;
+  function frame(t){
+    if (!last) last = t;
+    var dt = Math.min(0.05, (t-last)/1000);
+    last = t;
+    update(dt);
+    draw();
+    requestAnimationFrame(frame);
+  }
+
+  function canvasXY(e){
+    var r = cv.getBoundingClientRect();
+    return {
+      x: (e.clientX - r.left) * (W / r.width),
+      y: (e.clientY - r.top) * (H / r.height)
+    };
+  }
+
+  function hitDiff(x, y){
+    var rects = diffRects();
+    for (var i=0;i<rects.length;i++){
+      var r = rects[i];
+      if (x >= r[0] && x <= r[0]+r[2] && y >= r[1] && y <= r[1]+r[3]) return i;
+    }
+    return -1;
+  }
+
+  cv.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    if (state.mode === 'title'){
+      var p = canvasXY(e);
+      var i = hitDiff(p.x, p.y);
+      if (i >= 0){ chooseDiff(i); reset(); }
+      return;
+    }
+    toggleSign();
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (state.mode === 'title'){
+      if (e.code === 'Digit1' || e.code === 'Numpad1'){ e.preventDefault(); chooseDiff(0); reset(); return; }
+      if (e.code === 'Digit2' || e.code === 'Numpad2'){ e.preventDefault(); chooseDiff(1); reset(); return; }
+      if (e.code === 'Digit3' || e.code === 'Numpad3'){ e.preventDefault(); chooseDiff(2); reset(); return; }
+      if (e.code === 'ArrowLeft' || e.code === 'ArrowUp'){ e.preventDefault(); chooseDiff(state.diffIdx-1); return; }
+      if (e.code === 'ArrowRight' || e.code === 'ArrowDown'){ e.preventDefault(); chooseDiff(state.diffIdx+1); return; }
+      if (e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); reset(); return; }
+      return;
+    }
+    if (e.code === 'Space' || e.code === 'Enter'){ e.preventDefault(); toggleSign(); }
+  });
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
