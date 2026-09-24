@@ -32,18 +32,20 @@
   var OPEN_TIME = 0.90;   // once open, the door stands open this long: one flip, one stretch
   var RELOCK    = 0.10;   // after it shuts, the sign needs a beat before it turns again
 
-  // difficulty knobs. rent is the same bill on every shift; difficulty changes the
+  // difficulty knobs. the less people, the less rent; difficulty changes the
   // street, the crowd, and how much warning you get before the window fills up.
-  // every shift runs the same room (W_STD). hard is faster and tighter, and pays a
-  // 1.12 premium for it. it is not a different crowd.
-  var W_STD   = [5,3,3,2];   // regular, quiet, spender, stranger
+  // every shift runs different rooms. hard is faster and tighter, and pays a
+  // 1.12 premium for it. while easy pays only 0.9.
+  var W_POOR = [6,4,1,2];   // regular, quiet, spender, stranger
+  var W_STD  = [5,3,3,2];   // regular, quiet, spender, stranger
+  var W_RICH = [3,3,6,1];   // regular, quiet, spender, stranger
   var DIFFS = [
-    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:46, payMul:1.0,
-      watchBand:6, weights:W_STD, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
-    { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:36, payMul:1.0,
+    { label:'EASY',   nightLen:40, rent:[0,3,9,15,20,25], knownMax:46, payMul:0.9,
+      watchBand:6, weights:W_POOR, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
+    { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:40, payMul:1.0,
       watchBand:4, weights:W_STD, spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
-    { label:'HARD',   nightLen:36, rent:[0,7,15,22,29,35], knownMax:34, payMul:1.12,
-      watchBand:3, weights:W_STD, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
+    { label:'HARD',   nightLen:36, rent:[0,10,20,25,30,40], knownMax:38, payMul:1.12,
+      watchBand:3, weights:W_RICH, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
   ];
   var DIFF = DIFFS[1];
   var NIGHT_LEN = DIFF.nightLen;

@@ -16,21 +16,24 @@ Play: https://lowlightgames.itch.io/open-sign
 
 ## Shifts
 
-- **EASY** — a face cap of 46, a slower street, and a warning six faces before
-  the window fills.
-- **MEDIUM** — cap 40.
-- **HARD** — cap 34, a busier street, and the warning comes only three faces
-  out. It pays a 1.12x premium for the tighter margin.
+Every shift is its own room: a different crowd, a different rent, and a
+different amount of warning before the window fills.
 
-Rent is the same bill on every shift. Difficulty changes the street, the crowd,
-and how much warning you get, not what the night costs.
+- **EASY** — cap 46, a slower street, and a poorer crowd (mostly regulars and
+  quiet types) that pays 0.9x. Rent 72c, and the warning comes six faces out.
+- **MEDIUM** — cap 40, the standard crowd, standard pay. Rent 108c.
+- **HARD** — cap 38, a busier street, and a richer crowd (more spenders) that
+  pays a 1.12x premium. Rent 125c, and the warning comes only three faces out.
+
+The less a room pays, the less the night costs. Rent is not the same bill on
+every shift; it is priced to the crowd you get.
 
 ## Design note
 
 The whole game is one exchange: letting someone in costs you a face, and a face
 is the thing that ends the run. You never see who's worth what before you
-commit. Every later decision (the fast flip-to-flip door cycle, equal rent
-across all three shifts, the window glass that brightens as the town learns you)
+commit. Every later decision (the fast flip-to-flip door cycle, the window glass
+that brightens as the town learns you, the rent that tracks each shift's crowd)
 exists to keep that one exchange honest.
 
 ## Files
