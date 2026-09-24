@@ -7,7 +7,7 @@ can't cherry-pick the customer you want. Each type of visitor pays differently
 and remembers a different amount of your face. Five nights. Rent is due at dawn.
 Run out of money, or become too well known, and the run ends.
 
-Play: https://lowlightgames.itch.io/open-sign
+Play: [itch.io](https://lowlightgames.itch.io/open-sign) / [github.io](https://vvoice659.github.io/open-sign)
 
 ## Controls
 
