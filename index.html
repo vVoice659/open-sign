@@ -32,44 +32,45 @@
   var OPEN_TIME = 0.90;   // once open, the door stands open this long: one flip, one stretch
   var RELOCK    = 0.10;   // after it shuts, the sign needs a beat before it turns again
 
-  // difficulty knobs. rent rises, the face cap tightens, the street gets busier.
-  // rent is the same bill on every shift. difficulty changes the street and the crowd,
-  // not what the night costs: a tighter face cap pays for itself with a richer room.
+  // difficulty knobs. rent is the same bill on every shift; difficulty changes the
+  // street, the crowd, and how much warning you get before the window fills up.
+  // every shift runs the same room (W_STD). hard is faster and tighter, and pays a
+  // 1.12 premium for it. it is not a different crowd.
   var W_STD   = [5,3,3,2];   // regular, quiet, spender, stranger
-  var W_RICH  = [4,2,6,1];   // hard: more spenders, fewer strangers
   var DIFFS = [
-    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:40, payMul:1.0,
-      weights:W_STD, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
+    { label:'EASY',   nightLen:40, rent:[0,7,15,22,29,35], knownMax:46, payMul:1.0,
+      watchBand:6, weights:W_STD, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
     { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:36, payMul:1.0,
-      weights:W_STD, spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
+      watchBand:4, weights:W_STD, spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
     { label:'HARD',   nightLen:36, rent:[0,7,15,22,29,35], knownMax:34, payMul:1.12,
-      weights:W_STD, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
+      watchBand:3, weights:W_STD, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
   ];
   var DIFF = DIFFS[1];
   var NIGHT_LEN = DIFF.nightLen;
   var RENT = DIFF.rent;
   var KNOWN_MAX = DIFF.knownMax;
-  var WATCH_BAND = 3;   // start warning this many faces before the cap, so it gives lead
+  var WATCH_BAND = DIFF.watchBand;   // warn this many faces before the cap, so it gives real lead
 
   function useDiff(i){
     DIFF = DIFFS[i];
     NIGHT_LEN = DIFF.nightLen;
     RENT = DIFF.rent;
     KNOWN_MAX = DIFF.knownMax;
+    WATCH_BAND = DIFF.watchBand;
   }
 
   // pay = coins earned, add = how much of you this person remembers
   var TYPES = [
-    {name:'regular',  pay:3, add:1, weight:5, col:'#9aa7b8'},
-    {name:'quiet',    pay:1, add:1, weight:3, col:'#7c8798'},
-    {name:'spender',  pay:8, add:2, weight:3, col:'#c8b06a'},
-    {name:'stranger', pay:5, add:3, weight:2, col:'#b0707a'}
+    {name:'regular',  pay:3, add:1, col:'#9aa7b8'},
+    {name:'quiet',    pay:1, add:1, col:'#7c8798'},
+    {name:'spender',  pay:8, add:2, col:'#c8b06a'},
+    {name:'stranger', pay:5, add:3, col:'#b0707a'}
   ];
 
   var state = {
     mode:'title', night:1, coins:START_COINS, known:0, open:false,
     clock:0, spawnT:1.2, served:0, passed:0, shake:0, flash:0, diffIdx:1,
-    signLock:0, openTimer:0, watched:false, hint:0
+    signLock:0, openTimer:0, watched:false, hint:0, endLock:0
   };
   var customers = [];
   var stars = [];
@@ -128,8 +129,12 @@
 
   function spawnCustomer(){
     var n = Math.random() < 0.4 ? 2 : 1;
+    var lead = null;
     for (var i=0;i<n;i++){
-      customers.push(mkCustomer(-30 - i*46));
+      var c = mkCustomer(-30 - i*46);
+      if (lead && c.speed > lead.speed) c.speed = lead.speed;  // a pair never overtakes itself
+      customers.push(c);
+      lead = c;
     }
   }
 
@@ -139,7 +144,7 @@
     state.night = 1; state.coins = START_COINS; state.known = 0;
     state.open = false; state.served = 0; state.passed = 0;
     state.shake = 0; state.flash = 0;
-    state.signLock = 0; state.openTimer = 0; state.watched = false; state.hint = 6;
+    state.signLock = 0; state.openTimer = 0; state.watched = false; state.hint = 6; state.endLock = 0;
     customers.length = 0;
     startNight();
   }
@@ -166,23 +171,24 @@
       loseKnown(); return;          // the faces in the window are settled at dawn, not mid-street
     }
     if (state.coins < due){
-      state.mode = 'lost'; state.lostWhy = 'rent'; return;
+      state.mode = 'lost'; state.lostWhy = 'rent'; state.endLock = 0.5; return;
     }
     state.coins -= due;
     if (state.night >= MAX_NIGHTS){
-      state.mode = 'won'; return;
+      state.mode = 'won'; state.endLock = 0.5; return;
     }
     state.night += 1;
     startNight();
   }
 
   function loseKnown(){
-    state.mode = 'lost'; state.lostWhy = 'known'; state.shake = 1;
+    state.mode = 'lost'; state.lostWhy = 'known'; state.shake = 1; state.endLock = 0.5;
     sfxFound();
   }
 
   function update(dt){
     if (state.mode !== 'play') {
+      if (state.endLock > 0) state.endLock = Math.max(0, state.endLock - dt);
       if (state.shake > 0) state.shake = Math.max(0, state.shake - dt*1.5);
       if (state.flash > 0) state.flash = Math.max(0, state.flash - dt*2);
       return;
@@ -232,7 +238,10 @@
   function toggleSign(){
     ensureAudio();
     if (state.mode === 'title'){ reset(); return; }
-    if (state.mode === 'won' || state.mode === 'lost'){ reset(); return; }
+    if (state.mode === 'won' || state.mode === 'lost'){
+      if (state.endLock > 0) return;   // give the stats a beat before a stray click restarts
+      reset(); return;
+    }
     if (state.signLock > 0) return;   // mid-turn, or the sign is settling
     if (state.open) return;           // the door is open; it shuts on its own
     state.open = true;                // one flip: the door stands open for a stretch
@@ -437,7 +446,7 @@
   }
 
   function drawHud(){
-    if (state.mode === 'title') return;
+    if (state.mode !== 'play') return;
     ctx.textBaseline = 'top';
 
     // left panel
@@ -484,7 +493,7 @@
       ctx.font = 'bold 11px system-ui,sans-serif';
       ctx.fillStyle = '#e0909a';
       var left = Math.max(0, KNOWN_MAX - state.known);
-      ctx.fillText('someone is watching \u00b7 '+left+' more '+(left===1?'face':'faces')+' ends the night', W-24, 74);
+      ctx.fillText('someone is watching \u00b7 '+left+' more '+(left===1?'face':'faces')+' and dawn finds it full', W-24, 74);
     }
 
     if (state.mode === 'play' && state.hint > 0){
