@@ -44,7 +44,7 @@
       watchBand:6, weights:W_POOR, spdMin:42, spdMax:64, spawnMin:2.6, spawnMax:4.8 },
     { label:'MEDIUM', nightLen:38, rent:[0,7,15,22,29,35], knownMax:40, payMul:1.0,
       watchBand:4, weights:W_STD, spdMin:50, spdMax:78, spawnMin:2.1, spawnMax:3.9 },
-    { label:'HARD',   nightLen:36, rent:[0,10,20,25,30,40], knownMax:38, payMul:1.12,
+    { label:'HARD',   nightLen:36, rent:[0,11,22,28,34,45], knownMax:38, payMul:1.12,
       watchBand:3, weights:W_RICH, spdMin:58, spdMax:92, spawnMin:1.7, spawnMax:3.2 }
   ];
   var DIFF = DIFFS[1];
@@ -154,6 +154,9 @@
   function startNight(){
     state.clock = 0;
     state.spawnT = 1.0;
+    // a night must not inherit the door it ended on: a flip right before dawn
+    // used to carry an open door / live lock into the next shift.
+    state.open = false; state.openTimer = 0; state.signLock = 0;
     customers.length = 0;
   }
 
@@ -356,17 +359,17 @@
     ctx.moveTo(528,240); ctx.lineTo(590,240);
     ctx.stroke();
 
-    // door
+    // door: drawn to the exact span the enter-zone uses (DOORX-DOOR_IN .. DOORX+DOOR_OUT)
     ctx.fillStyle = '#10141f';
-    rrect(600,232,62,GROUND-232,4); ctx.fill();
+    rrect(618,232,46,GROUND-232,4); ctx.fill();
     var live = state.open && state.signLock <= 0;   // the sign only reads OPEN once the turn lands
     var turning = state.open && state.signLock > 0;
     var doorGlow = live ? 1 : 0.22;
     ctx.fillStyle = 'rgba(255,190,100,'+(0.30*doorGlow)+')';
-    rrect(604,236,54,GROUND-240,3); ctx.fill();
+    rrect(622,236,38,GROUND-240,3); ctx.fill();
     ctx.fillStyle = '#2a3450';
-    ctx.fillRect(600,232,62,4);
-    ctx.beginPath(); ctx.arc(650,300,3,0,6.283); ctx.fill();
+    ctx.fillRect(618,232,46,4);
+    ctx.beginPath(); ctx.arc(654,300,3,0,6.283); ctx.fill();
 
     // the sign: this is the control, and it takes a moment to turn
     var ready = state.signLock <= 0;
@@ -495,7 +498,7 @@
       ctx.font = 'bold 11px system-ui,sans-serif';
       ctx.fillStyle = '#e0909a';
       var left = Math.max(0, KNOWN_MAX - state.known);
-      ctx.fillText('someone is watching \u00b7 '+left+' more '+(left===1?'face':'faces')+' and dawn finds it full', W-24, 74);
+      ctx.fillText('someone is watching \u00b7 '+left+' more and dawn finds it full', W-24, 74);
     }
 
     if (state.mode === 'play' && state.hint > 0){
